@@ -107,12 +107,19 @@ def cleanup_ddp():
     dist.destroy_process_group()
 
 
-def run_ddp(rank, dataset_name_or_id, configuration, fold, tr, p, disable_checkpointing, c, val,
+def run_ddp(rank, dataset_name_or_id, configuration, fold, tr, p,
+            disable_default_da, enable_ginipa_da, disable_checkpointing, c, val,
             pretrained_weights, npz, val_with_best, world_size):
     setup_ddp(rank, world_size)
     torch.cuda.set_device(torch.device('cuda', dist.get_rank()))
 
     nnunet_trainer = get_trainer_from_args(dataset_name_or_id, configuration, fold, tr, p)
+
+    if disable_default_da:
+        nnunet_trainer.disable_default_data_aug = disable_default_da
+
+    if enable_ginipa_da:
+        nnunet_trainer.do_ginipa_data_aug = enable_ginipa_da
 
     if disable_checkpointing:
         nnunet_trainer.disable_checkpointing = disable_checkpointing
@@ -140,6 +147,8 @@ def run_training(dataset_name_or_id: Union[str, int],
                  plans_identifier: str = 'nnUNetPlans',
                  pretrained_weights: Optional[str] = None,
                  num_gpus: int = 1,
+                 disable_default_da: bool = False,
+                 enable_ginipa_da: bool = False,
                  export_validation_probabilities: bool = False,
                  continue_training: bool = False,
                  only_run_validation: bool = False,
@@ -179,6 +188,8 @@ def run_training(dataset_name_or_id: Union[str, int],
                      fold,
                      trainer_class_name,
                      plans_identifier,
+                     disable_default_da,
+                     enable_ginipa_da,
                      disable_checkpointing,
                      continue_training,
                      only_run_validation,
@@ -191,6 +202,12 @@ def run_training(dataset_name_or_id: Union[str, int],
     else:
         nnunet_trainer = get_trainer_from_args(dataset_name_or_id, configuration, fold, trainer_class_name,
                                                plans_identifier, device=device)
+
+        if disable_default_da:
+            nnunet_trainer.disable_default_data_aug = disable_default_da
+
+        if enable_ginipa_da:
+            nnunet_trainer.do_ginipa_data_aug = enable_ginipa_da
 
         if disable_checkpointing:
             nnunet_trainer.disable_checkpointing = disable_checkpointing
@@ -229,6 +246,10 @@ def run_training_entry():
                              'be used when actually training. Beta. Use with caution.')
     parser.add_argument('-num_gpus', type=int, default=1, required=False,
                         help='Specify the number of GPUs to use for training')
+    parser.add_argument('--disable_default_da', action='store_true', required=False,
+                        help='Set this flag to disable the nnU-Net default data augmentation')
+    parser.add_argument('--enable_ginipa_da', action='store_true', required=False,
+                        help='Set this flag to enable GIN-IPA data augmentation')
     parser.add_argument('--npz', action='store_true', required=False,
                         help='[OPTIONAL] Save softmax predictions from final validation as npz files (in addition to predicted '
                              'segmentations). Needed for finding the best ensemble.')
@@ -265,8 +286,8 @@ def run_training_entry():
         device = torch.device('mps')
 
     run_training(args.dataset_name_or_id, args.configuration, args.fold, args.tr, args.p, args.pretrained_weights,
-                 args.num_gpus, args.npz, args.c, args.val, args.disable_checkpointing, args.val_best,
-                 device=device)
+                 args.num_gpus, args.disable_default_da, args.enable_ginipa_da, args.npz, args.c, args.val,
+                 args.disable_checkpointing, args.val_best, device=device)
 
 
 if __name__ == '__main__':
