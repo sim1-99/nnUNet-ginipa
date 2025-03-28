@@ -203,5 +203,5 @@ def resample_data_or_seg(data: np.ndarray, new_shape: Union[Tuple[float, ...], L
 if __name__ == '__main__':
     input_array = np.random.random((1, 42, 231, 142))
     output_shape = (52, 256, 256)
-    out = resample_data_or_seg(input_array, output_shape, is_seg=False, axis=3, order=1, order_z=0, do_separate_z=True)
+    out = resample_data_or_seg(input_array, output_shape, is_seg=False, axis=2, order=1, order_z=0, do_separate_z=True)
     print(out.shape, input_array.shape)

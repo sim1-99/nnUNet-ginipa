@@ -50,6 +50,7 @@ from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 from nnunetv2.inference.sliding_window_prediction import compute_gaussian
 from nnunetv2.paths import nnUNet_preprocessed, nnUNet_results
 from nnunetv2.training.data_augmentation.compute_initial_patch_size import get_patch_size
+from nnunetv2.training.data_augmentation.custom_transforms.ipa_transform import GINIPA_transform, RandTransform
 from nnunetv2.training.dataloading.nnunet_dataset import infer_dataset_class
 from nnunetv2.training.dataloading.data_loader import nnUNetDataLoader
 from nnunetv2.training.logging.nnunet_logger import nnUNetLogger
@@ -205,8 +206,11 @@ class nnUNetTrainer(object):
             # we need to change the batch size in DDP because we don't use any of those distributed samplers
             self._set_batch_size_and_oversample()
 
-            self.num_input_channels = determine_num_input_channels(self.plans_manager, self.configuration_manager,
-                                                                   self.dataset_json)
+            self.num_input_channels = determine_num_input_channels(
+                self.plans_manager,
+                self.configuration_manager,
+                self.dataset_json
+            )
 
             self.network = self.build_network_architecture(
                 self.configuration_manager.network_arch_class_name,
@@ -699,40 +703,42 @@ class nnUNetTrainer(object):
 
     @staticmethod
     def get_training_transforms(
-            patch_size: Union[np.ndarray, Tuple[int]],
-            disable_default_data_aug: bool,
-            rotation_for_DA: RandomScalar,
-            deep_supervision_scales: Union[List, Tuple, None],
-            mirror_axes: Tuple[int, ...],
-            do_dummy_2d_data_aug: bool,
-            do_ginipa_data_aug: bool,
-            use_mask_for_norm: List[bool] = None,
-            is_cascaded: bool = False,
-            foreground_labels: Union[Tuple[int, ...], List[int]] = None,
-            regions: List[Union[List[int], Tuple[int, ...], int]] = None,
-            ignore_label: int = None,
+        patch_size: Union[np.ndarray, Tuple[int]],
+        disable_default_data_aug: bool,
+        rotation_for_DA: RandomScalar,
+        deep_supervision_scales: Union[List, Tuple, None],
+        mirror_axes: Tuple[int, ...],
+        do_dummy_2d_data_aug: bool,
+        do_ginipa_data_aug: bool,
+        use_mask_for_norm: List[bool] = None,
+        is_cascaded: bool = False,
+        foreground_labels: Union[Tuple[int, ...], List[int]] = None,
+        regions: List[Union[List[int], Tuple[int, ...], int]] = None,
+        ignore_label: int = None,
     ) -> BasicTransform:
         transforms = []
-        if disable_default_data_aug is False:
-            if do_dummy_2d_data_aug:
-                ignore_axes = (0,)
-                transforms.append(Convert3DTo2DTransform())
-                patch_size_spatial = patch_size[1:]
-            else:
-                patch_size_spatial = patch_size
-                ignore_axes = None
-            transforms.append(
-                SpatialTransform(
-                    patch_size_spatial, patch_center_dist_from_border=0, random_crop=False, p_elastic_deform=0,
-                    p_rotation=0.2,
-                    rotation=rotation_for_DA, p_scaling=0.2, scaling=(0.7, 1.4), p_synchronize_scaling_across_axes=1,
-                    bg_style_seg_sampling=False  # , mode_seg='nearest'
-                )
+
+        if do_dummy_2d_data_aug:
+            ignore_axes = (0,)
+            transforms.append(Convert3DTo2DTransform())
+            patch_size_spatial = patch_size[1:]
+        else:
+            patch_size_spatial = patch_size
+            ignore_axes = None
+        transforms.append(
+            SpatialTransform(
+                patch_size_spatial, patch_center_dist_from_border=0,
+                random_crop=False, p_elastic_deform=0, p_rotation=0.2,
+                rotation=rotation_for_DA, p_scaling=0.2, scaling=(0.7, 1.4),
+                p_synchronize_scaling_across_axes=1,
+                bg_style_seg_sampling=False  # , mode_seg='nearest'
             )
+        )
 
-            if do_dummy_2d_data_aug:
-                transforms.append(Convert2DTo3DTransform())
+        if do_dummy_2d_data_aug:
+            transforms.append(Convert2DTo3DTransform())
 
+        if not disable_default_data_aug:
             transforms.append(RandomTransform(
                 GaussianNoiseTransform(
                     noise_variance=(0, 0.1),
@@ -761,7 +767,7 @@ class nnUNetTrainer(object):
                     preserve_range=True,
                     synchronize_channels=False,
                     p_per_channel=1
-                ), apply_probability=0.15
+                ), apply_probability=0.1
             ))
             transforms.append(RandomTransform(
                 SimulateLowResolutionTransform(
@@ -792,23 +798,41 @@ class nnUNetTrainer(object):
                 ), apply_probability=0.3
             ))
 
-            if mirror_axes is not None and len(mirror_axes) > 0:
-                transforms.append(
-                    MirrorTransform(
-                        allowed_axes=mirror_axes
-                    )
-                )
-
-            if use_mask_for_norm is not None and any(use_mask_for_norm):
-                transforms.append(MaskImageTransform(
-                    apply_to_channels=[i for i in range(len(use_mask_for_norm)) if use_mask_for_norm[i]],
-                    channel_idx_in_seg=0,
-                    set_outside_to=0,
-                ))
-
+        if do_ginipa_data_aug:
             transforms.append(
-                RemoveLabelTansform(-1, 0)
+                RandTransform(
+                    GINIPA_transform(
+                        ipa_config={
+                            'epsilon': 0.3,
+                            'xi': 1e-6,
+                            'control_point_spacing': [32, 32],
+                            'downscale': 1,
+                            'interpolation_order': 3,
+                            'init_mode': 'gaussian',
+                            'space': 'log',
+                        }
+                    ),
+                    apply_probability=0.5,
+                )
             )
+
+        if mirror_axes is not None and len(mirror_axes) > 0:
+            transforms.append(
+                MirrorTransform(
+                    allowed_axes=mirror_axes
+                )
+            )
+
+        if use_mask_for_norm is not None and any(use_mask_for_norm):
+            transforms.append(MaskImageTransform(
+                apply_to_channels=[i for i in range(len(use_mask_for_norm)) if use_mask_for_norm[i]],
+                channel_idx_in_seg=0,
+                set_outside_to=0,
+            ))
+
+        transforms.append(
+            RemoveLabelTansform(-1, 0)
+        )
 
         if is_cascaded:
             assert foreground_labels is not None, 'We need foreground_labels for cascade augmentations'
@@ -838,9 +862,6 @@ class nnUNetTrainer(object):
                     ), apply_probability=0.2
                 )
             )
-
-        if do_ginipa_data_aug:
-            pass ###
 
         if regions is not None:
             # the ignore label must also be converted
@@ -1374,6 +1395,7 @@ class nnUNetTrainer(object):
         compute_gaussian.cache_clear()
 
     def run_training(self):
+        multiprocessing.set_start_method("spawn")
         self.on_train_start()
 
         for epoch in range(self.current_epoch, self.num_epochs):
