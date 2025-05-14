@@ -805,7 +805,7 @@ class nnUNetTrainer(object):
                         ipa_config={
                             'epsilon': 0.3,
                             'xi': 1e-6,
-                            'control_point_spacing': [32, 32],
+                            'control_point_spacing': [64, 64],
                             'downscale': 1,
                             'interpolation_order': 3,
                             'init_mode': 'gaussian',

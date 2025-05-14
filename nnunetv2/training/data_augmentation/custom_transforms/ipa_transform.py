@@ -1,6 +1,7 @@
+import numpy as np
+import random
 import torch
 import torch.nn.functional as F
-import numpy as np
 
 from .gin_tranform import GINGroupConv3D
 from batchgeneratorsv2.transforms.base.basic_transform import ImageOnlyTransform
@@ -25,6 +26,28 @@ def rescale_intensity(data, new_min = 0, new_max = 1, eps = 1e-20):
     new_data = (data - old_min + eps) / (old_max - old_min + eps)*(new_max-new_min)+new_min
     new_data = new_data.view(bs, c, h, w)
 
+    return new_data
+
+
+def rescale_intensity_3D(data, new_min = 0, new_max = 1, eps = 1e-20):
+    '''
+    rescale pytorch batch data
+    :param data: N*1*H*W*D
+    :return: data with intensity ranging from 0 to 1
+    '''
+    bs, c, h, w, d = \
+        data.size(0), data.size(1), data.size(2), data.size(3), data.size(4)
+    data = data.reshape(bs*c, -1)
+    # pytorch 1.3
+    old_max = torch.max(data, dim=1, keepdim=True).values
+    old_min = torch.min(data, dim=1, keepdim=True).values
+
+    # co1818: in adjust to pytorch 0.4 for wtbenv
+    #old_max = torch.max(data, dim=1, keepdim=True)[0]
+    #old_min = torch.min(data, dim=1, keepdim=True)[0]
+
+    new_data = (data - old_min+eps) / (old_max - old_min + eps)*(new_max-new_min)+new_min
+    new_data = new_data.view(bs, c, h, w, d)
     return new_data
 
 
@@ -540,15 +563,36 @@ def apply_ginipa(img: torch.Tensor, ipa_config: dict) -> torch.Tensor:
     img = torch.cat((img, img, img), dim=1)
     input_buffer = torch.cat([gin_transform(img) for _ in range(3)], dim=0)
     ipa_transform.init_parameters()
+
+    blend_mask_1 = rescale_intensity(ipa_transform.bias_field)
+    blend_mask_2 = blend_mask_1.clone().detach().reshape(1, 1, 256, 1, 256)
+    blend_mask_2 = blend_mask_2.repeat(1, 1, 1, 256, 1)
+    blend_mask_3 = blend_mask_1.clone().detach().reshape(1, 1, 256, 256, 1)
+    blend_mask_3 = blend_mask_3.repeat(1, 1, 1, 1, 256)
+    blend_mask_1 = blend_mask_1.repeat(1, 1, 256, 1, 1)
+
+    blend_volume = (blend_mask_1 + blend_mask_2 + blend_mask_3)/3.
+    blend_volume = rescale_intensity_3D(blend_volume.repeat(1, 3, 1, 1, 1))
+
+    """dir = random.randint(0, 2)
+    if dir == 0:
+        perm = (0, 1, 2, 3, 4)
+    elif dir == 1:
+        perm = (0, 1, 4, 2, 3)
+    elif dir == 2:
+        perm = (0, 1, 3, 4, 2)
+    blend_mask = blend_mask.permute(perm)
+
     blend_mask = rescale_intensity(
         ipa_transform.bias_field).repeat(1, 3, 1, 1, 1)
+    """
 
-    input_cp1 = input_buffer[0].clone().detach() * blend_mask + input_buffer[1].clone().detach() * (1.0 - blend_mask)
-    input_cp2 = input_buffer[0] * (1 - blend_mask) + input_buffer[1] * blend_mask
+    input_cp1 = input_buffer[0].clone().detach() * blend_volume + input_buffer[1].clone().detach() * (1.0 - blend_volume)
+    input_cp2 = input_buffer[0] * (1 - blend_volume) + input_buffer[1] * blend_volume
 
     input_buffer[0] = input_cp1
     input_buffer[1] = input_cp2
-    output = to01(input_buffer[0].data, True)
+    output = input_buffer[0]
     output = output[0].unsqueeze(0).cpu()
 
     return output
